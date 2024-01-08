@@ -1,10 +1,8 @@
 #pragma once
 
 #include <fstream>
-#include <nlohmann/json.hpp>
 #include <string_view>
-
-using json = nlohmann::json;
+#include "types.hpp"
 
 namespace jsonutils {
 
