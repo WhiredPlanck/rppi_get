@@ -1,14 +1,14 @@
-#include "git.hpp"
 #include <cxxopts.hpp>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <nlohmann/json.hpp>
 #include <regex>
 #include <stdio.h>
 #include <string>
 #include <vector>
 #include <yaml-cpp/yaml.h>
+#include "git.hpp"
+#include "json.hpp"
 #ifdef _WIN32
 #include <Windows.h>
 #include <rpcdce.h>
@@ -17,7 +17,6 @@
 #define sep "/"
 #endif
 
-using json = nlohmann::json;
 using VString = std::vector<std::string>;
 using Path = std::filesystem::path;
 
@@ -466,52 +465,7 @@ int clone_or_update_repository(const char *repo_url, const char *local_path,
 }
 // libgit2 relate functions ends
 // ----------------------------------------------------------------------------
-// dump json object to a file
-int write_json(const json &j, const std::string &file) {
-    std::ofstream output(file);
-    if (!output.is_open()) {
-        std::cerr << "Failed to open output file: " << file << std::endl;
-        return 1;
-    }
-    output << j.dump(4);
-    output.close();
-    return 0;
-}
-// load a json file
-json load_json(const std::string &file_path, bool create = false) {
-    if (!file_exist(file_path)) {
-        if (create)
-            write_json(json(), file_path);
-        return json();
-    }
-    std::ifstream file(file_path);
-    json j;
-    if (file.peek() != std::ifstream::traits_type::eof())
-        file >> j;
-    else {
-        file.close();
-        if (create)
-            write_json(j, file_path);
-        return j;
-    }
-    file.close();
-    return j;
-}
-void delete_str_json(json &j, const std::string &str) {
-    for (auto it = j.begin(); it != j.end(); ++it) {
-        if (*it == str) {
-            it = j.erase(it);
-            break;
-        }
-    }
-}
-bool json_array_contain(const json &j, const std::string &str) {
-    for (auto i = 0; i < j.size(); i++) {
-        if (j[i] == str)
-            return true;
-    }
-    return false;
-}
+
 // ----------------------------------------------------------------------------
 // recipes processes
 // ----------------------------------------------------------------------------
@@ -539,8 +493,7 @@ int install_recipe_impl(const VString &recipes, const std::string &prompt,
                 copy_file(file, target_path);
                 target_path = convertToUtf8(target_path);
                 std::cout << "installed: " << target_path << std::endl;
-                bool exists = json_array_contain(
-                    installed_recipes[dep.substr(pos + 1)], target_path);
+                bool exists = installed_recipes[dep.substr(pos + 1)].contains(target_path);
                 if (!exists)
                     installed_recipes[dep.substr(pos + 1)].push_back(
                         target_path);
@@ -564,7 +517,8 @@ int install_recipe(const Recipe &recipe, const std::string &recipe_file = "") {
         return error;
     }
     // load cache_dir/.installed_recipes.json, create one if not exists
-    json installed_recipes = load_json(installed_recipes_json, true);
+    json installed_recipes =
+        jsonutils::load_from_file(installed_recipes_json);
 
     std::string recipe_file_path =
         recipe_file.empty() ? "" : local_path + sep + recipe_file;
@@ -580,8 +534,7 @@ int install_recipe(const Recipe &recipe, const std::string &recipe_file = "") {
         copy_file(file, target_path);
         target_path = convertToUtf8(target_path);
         std::cout << "installed: " << target_path << std::endl;
-        bool exists = json_array_contain(installed_recipes[recipe.local_path],
-                                         target_path);
+        bool exists = installed_recipes[recipe.local_path].contains(target_path);
         if (!exists)
             installed_recipes[recipe.local_path].push_back(target_path);
     }
@@ -595,7 +548,7 @@ int install_recipe(const Recipe &recipe, const std::string &recipe_file = "") {
                             "update reverse dependency: ", installed_recipes);
     if (error)
         return error;
-    write_json(installed_recipes, installed_recipes_json);
+    jsonutils::save_to_file(installed_recipes, installed_recipes_json);
     return error;
 }
 // delete recipe repo impl
@@ -624,8 +577,7 @@ void delete_recipe_impl(const VString &recipes, const std::string &prompt,
                         Path(target_path).parent_path().string();
                     delete_empty_dir_to(parent_path, user_dir);
                 }
-                delete_str_json(installed_recipes[dep.substr(pos + 1)],
-                                target_path);
+                installed_recipes[dep.substr(pos + 1)].erase(target_path);
             }
             if (installed_recipes.contains(dep.substr(pos + 1)))
                 installed_recipes.erase(dep.substr(pos + 1));
@@ -637,20 +589,20 @@ void delete_recipe_impl(const VString &recipes, const std::string &prompt,
 int delete_recipe(const Recipe &recipe, const std::string &recipe_file = "",
                   bool purge = false) {
     // load cache_dir/.installed_recipes.json
-    json installed_recipes = load_json(installed_recipes_json);
+    json installed_recipes = jsonutils::load_from_file(installed_recipes_json);
     VString recipes;
     recipes.push_back(recipe.repo);
     delete_recipe_impl(recipes, "update recipe: ", installed_recipes);
     VString().swap(recipes);
     if (!purge) {
-        write_json(installed_recipes, installed_recipes_json);
+        jsonutils::save_to_file(installed_recipes, installed_recipes_json);
         return 0;
     }
     delete_recipe_impl(recipe.dependencies,
                        "update dependency: ", installed_recipes);
     delete_recipe_impl(recipe.reverseDependencies,
                        "update reverse dependency: ", installed_recipes);
-    write_json(installed_recipes, installed_recipes_json);
+    jsonutils::save_to_file(installed_recipes, installed_recipes_json);
     return 0;
 }
 // update rppi cache
@@ -662,7 +614,7 @@ int update_rppi(std::string local_path, std::string mirror, std::string proxy) {
 // parse rppi index.json to get Recipe vector
 void parse_index_rppi(const std::string &file_dir, const std::string &category,
                       std::vector<Recipe> &recipes) {
-    json j = load_json(file_dir + "/index.json");
+    json j = jsonutils::load_from_file(file_dir + "/index.json");
     if (j.contains("recipes")) {
         for (const auto &recipe : j["recipes"]) {
             Recipe _recipe;
@@ -880,7 +832,7 @@ int main(int argc, char **argv) {
                 return 0;
         } else if (result.count("installed")) {
             std::cout << "recipes installed:" << std::endl;
-            json j = load_json(installed_recipes_json);
+            json j = jsonutils::load_from_file(installed_recipes_json);
             for (auto it = j.begin(); it != j.end(); ++it)
                 std::cout << "[*] " << it.key() << std::endl;
             return 0;
@@ -972,7 +924,8 @@ int main(int argc, char **argv) {
                     std::cout << ", with recipe file: " << recipe_file;
                 std::cout << std::endl;
                 delete_recipe(res.at(0), recipe_file);
-            } else if (load_json(installed_recipes_json).contains(local_path)) {
+            } else if (jsonutils::load_from_file(installed_recipes_json)
+                           .contains(local_path)) {
                 Recipe recipe;
                 recipe.repo = repo;
                 recipe.local_path = local_path;
@@ -995,7 +948,8 @@ int main(int argc, char **argv) {
                 std::cout << "purge recipe by keyword : " << repo;
                 std::cout << std::endl;
                 delete_recipe(res.at(0), "", true);
-            } else if (load_json(installed_recipes_json).contains(local_path)) {
+            } else if (jsonutils::load_from_file(installed_recipes_json)
+                           .contains(local_path)) {
                 Recipe recipe;
                 recipe.repo = repo;
                 recipe.local_path = local_path;
